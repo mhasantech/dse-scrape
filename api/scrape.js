@@ -26,7 +26,7 @@ if (!admin.apps.length) {
 
 const db = admin.firestore();
 
-// ============= UTILITY FUNCTIONS =============
+// ============= SIMPLE SCRAPING FUNCTIONS =============
 
 // মার্কেট খোলা আছে কিনা চেক করা
 function isMarketOpen() {
@@ -35,7 +35,6 @@ function isMarketOpen() {
   const hour = now.getHours();
   const minute = now.getMinutes();
   
-  // শুক্রবার(5) বা শনিবার(6) বন্ধ
   if (day === 5 || day === 6) return false;
   
   const timeNow = hour * 60 + minute;
@@ -44,23 +43,6 @@ function isMarketOpen() {
   
   return timeNow >= marketStart && timeNow <= marketEnd;
 }
-
-// ক্লিন টেক্সট ফাংশন
-function cleanText(text) {
-  if (!text) return 'N/A';
-  return text.replace(/\s+/g, ' ').trim();
-}
-
-// এক্সট্রাক্ট ভ্যালু ফাংশন
-function extractValue($row, selectors) {
-  for (const selector of selectors) {
-    const val = $(row).find(selector).last().text().trim();
-    if (val && val !== '-' && val !== 'N/A') return cleanText(val);
-  }
-  return 'N/A';
-}
-
-// ============= SCRAPING FUNCTIONS =============
 
 // সব কোম্পানির তালিকা
 async function getAllCompanies() {
@@ -93,7 +75,7 @@ async function getAllCompanies() {
   }
 }
 
-// কোম্পানির বিস্তারিত তথ্য
+// কোম্পানির বিস্তারিত তথ্য (সরলীকৃত)
 async function getCompanyDetails(tradingCode) {
   try {
     const url = `https://www.dsebd.org/displayCompany.php?name=${tradingCode}`;
@@ -108,92 +90,56 @@ async function getCompanyDetails(tradingCode) {
       scrapedAt: new Date().toISOString()
     };
     
-    // তথ্য সংগ্রহ
-    $('table tr, .table tr').each((i, row) => {
-      const text = $(row).text().toLowerCase();
-      const th = $(row).find('th').text().toLowerCase();
-      const td = $(row).find('td');
-      
-      // কোম্পানির নাম
-      if (text.includes('company name') || th.includes('company name')) {
-        details.companyName = extractValue($(row), ['td:last-child', '.value', '.info']);
-      }
-      
-      // ট্রেডিং কোড
-      if (text.includes('trading code') || th.includes('trading code')) {
-        const val = extractValue($(row), ['td:last-child', '.value']);
-        if (val !== tradingCode) details.scripCode = val;
-      }
-      
-      // লিস্টিং ইয়ার
-      if (text.includes('listing year') || th.includes('listing year')) {
-        details.listingYear = extractValue($(row), ['td:last-child', '.value']);
-      }
-      
-      // শেয়ার ক্যাটাগরি
-      if (text.includes('share category') || th.includes('share category')) {
-        details.shareCategory = extractValue($(row), ['td:last-child', '.value']);
-      }
-      
-      // ফেস ভ্যালু
-      if (text.includes('face value') || th.includes('face value')) {
-        details.faceValue = extractValue($(row), ['td:last-child', '.value']);
-      }
-      
-      // পেইড আপ ক্যাপিটাল
-      if ((text.includes('paid up capital') || th.includes('paid up capital')) && !text.includes('type')) {
-        const val = extractValue($(row), ['td:last-child', '.value']);
-        if (val && !val.includes('Equity') && !val.includes('Type')) {
-          details.paidUpCapital = val;
-        }
-      }
-      
-      // ইপিএস
-      if (text.includes('eps') || th.includes('eps')) {
-        const val = extractValue($(row), ['td:last-child', '.value']);
-        if (val && !val.includes('Using') && !val.includes('Diluted')) {
-          details.eps = val;
-        }
-      }
-      
-      // এনএভি
-      if ((text.includes('nav') || th.includes('nav')) && !text.includes('per share')) {
-        const val = extractValue($(row), ['td:last-child', '.value']);
-        if (val && !val.includes('Profit') && !val.includes('Loss')) {
-          details.nav = val;
-        }
-      }
-      
-      // পি/ই রেশিও
-      if (text.includes('p/e') || th.includes('p/e')) {
-        const val = extractValue($(row), ['td:last-child', '.value']);
-        if (val && !val.includes('Dividend Yield')) {
-          details.peRatio = val;
-        }
-      }
-      
-      // ডিভিডেন্ড
-      if (text.includes('dividend') && !text.includes('cash') && !text.includes('stock')) {
-        details.dividend = extractValue($(row), ['td:last-child', '.value']);
-      }
-      
-      // ক্যাশ ডিভিডেন্ড
-      if (text.includes('cash dividend') || (text.includes('dividend') && text.includes('cash'))) {
-        details.cashDividend = extractValue($(row), ['td:last-child', '.value']);
-      }
-      
-      // স্টক ডিভিডেন্ড / বোনাস
-      if (text.includes('stock dividend') || text.includes('bonus')) {
-        details.stockDividend = extractValue($(row), ['td:last-child', '.value']);
-      }
-      
-      // রেকর্ড ডেট (শুধু তারিখ বের করা)
-      if (text.includes('record date') || text.includes('booking date')) {
-        let val = extractValue($(row), ['td:last-child', '.value']);
-        const dateMatch = val.match(/\d{2}[-/]\w{3}[-/]\d{4}|\d{4}[-/]\d{2}[-/]\d{2}/);
-        details.recordDate = dateMatch ? dateMatch[0] : val.split('.')[0].substring(0, 30);
-      }
-    });
+    // টেক্সট সার্চ করে ডাটা নেওয়া
+    const html = $.html();
+    
+    // কোম্পানির নাম
+    const nameMatch = html.match(/Company Name\s*<\/th>\s*<td[^>]*>([^<]+)</i);
+    if (nameMatch) details.companyName = nameMatch[1].trim();
+    
+    // ট্রেডিং কোড
+    const codeMatch = html.match(/Trading Code\s*<\/th>\s*<td[^>]*>([^<]+)</i);
+    if (codeMatch && codeMatch[1].trim() !== tradingCode) details.scripCode = codeMatch[1].trim();
+    
+    // লিস্টিং ইয়ার
+    const yearMatch = html.match(/Listing Year\s*<\/th>\s*<td[^>]*>([^<]+)</i);
+    if (yearMatch) details.listingYear = yearMatch[1].trim();
+    
+    // শেয়ার ক্যাটাগরি
+    const catMatch = html.match(/Share Category\s*<\/th>\s*<td[^>]*>([^<]+)</i);
+    if (catMatch) details.shareCategory = catMatch[1].trim();
+    
+    // ফেস ভ্যালু
+    const faceMatch = html.match(/Face Value\s*<\/th>\s*<td[^>]*>([^<]+)</i);
+    if (faceMatch) details.faceValue = faceMatch[1].trim();
+    
+    // ইপিএস
+    const epsMatch = html.match(/EPS\s*<\/th>\s*<td[^>]*>([^<]+)</i);
+    if (epsMatch) details.eps = epsMatch[1].trim();
+    
+    // এনএভি
+    const navMatch = html.match(/NAV\s*<\/th>\s*<td[^>]*>([^<]+)</i);
+    if (navMatch) details.nav = navMatch[1].trim();
+    
+    // পি/ই রেশিও
+    const peMatch = html.match(/P\/E Ratio\s*<\/th>\s*<td[^>]*>([^<]+)</i);
+    if (peMatch) details.peRatio = peMatch[1].trim();
+    
+    // ডিভিডেন্ড
+    const divMatch = html.match(/Dividend\s*<\/th>\s*<td[^>]*>([^<]+)</i);
+    if (divMatch) details.dividend = divMatch[1].trim();
+    
+    // ক্যাশ ডিভিডেন্ড
+    const cashMatch = html.match(/Cash Dividend\s*<\/th>\s*<td[^>]*>([^<]+)</i);
+    if (cashMatch) details.cashDividend = cashMatch[1].trim();
+    
+    // স্টক ডিভিডেন্ড
+    const stockMatch = html.match(/Stock Dividend\s*<\/th>\s*<td[^>]*>([^<]+)</i);
+    if (stockMatch) details.stockDividend = stockMatch[1].trim();
+    
+    // রেকর্ড ডেট
+    const recordMatch = html.match(/Record Date\s*<\/th>\s*<td[^>]*>([^<]+)</i);
+    if (recordMatch) details.recordDate = recordMatch[1].trim();
     
     return details;
   } catch (error) {
@@ -202,7 +148,7 @@ async function getCompanyDetails(tradingCode) {
   }
 }
 
-// মার্কেট প্রাইস
+// মার্কেট প্রাইস (সরলীকৃত)
 async function getMarketPrice(tradingCode) {
   try {
     const response = await axios.get('https://www.dsebd.org/latest_share_price_scroll_l.php', {
@@ -226,16 +172,17 @@ async function getMarketPrice(tradingCode) {
       marketOpen: isMarketOpen()
     };
     
-    $('table tr').each((i, row) => {
+    // টেবিল থেকে ডাটা খোঁজা
+    $('tr').each((i, row) => {
       const tds = $(row).find('td');
       if (tds.length >= 6) {
-        const firstCol = $(tds[0]).text().trim();
-        if (firstCol.toUpperCase() === tradingCode.toUpperCase()) {
+        const code = $(tds[0]).text().trim();
+        if (code.toUpperCase() === tradingCode.toUpperCase()) {
           const ltp = $(tds[1]).text().trim();
           const ycp = $(tds[3]).text().trim();
           let changePercent = 'N/A';
           
-          if (ltp !== 'N/A' && ycp !== 'N/A' && ltp && ycp) {
+          if (ltp && ycp && ltp !== 'N/A' && ycp !== 'N/A') {
             const ltpNum = parseFloat(ltp);
             const ycpNum = parseFloat(ycp);
             if (!isNaN(ltpNum) && !isNaN(ycpNum) && ycpNum !== 0) {
@@ -250,9 +197,9 @@ async function getMarketPrice(tradingCode) {
             ycp: ycp || 'N/A',
             high: $(tds[4]).text().trim() || 'N/A',
             low: $(tds[5]).text().trim() || 'N/A',
-            volume: $(tds[6]) ? $(tds[6]).text().trim() : 'N/A',
-            value: $(tds[7]) ? $(tds[7]).text().trim() : 'N/A',
-            trade: $(tds[8]) ? $(tds[8]).text().trim() : 'N/A',
+            volume: tds[6] ? $(tds[6]).text().trim() : 'N/A',
+            value: tds[7] ? $(tds[7]).text().trim() : 'N/A',
+            trade: tds[8] ? $(tds[8]).text().trim() : 'N/A',
             changePercent: changePercent,
             scrapedAt: new Date().toISOString(),
             marketOpen: isMarketOpen()
@@ -272,29 +219,15 @@ async function getMarketPrice(tradingCode) {
 // Firebase এ সেভ
 async function saveToFirebase(tradingCode, details, price) {
   try {
-    if (details && Object.keys(details).length > 1) {
+    if (details && !details.error) {
       await db.collection('company_details').doc(tradingCode).set(details, { merge: true });
     }
-    
     if (price && price.ltp && price.ltp !== 'N/A' && price.ltp !== 'Error') {
       await db.collection('market_prices').doc(tradingCode).set(price, { merge: true });
-      
-      // হিস্টোরি সেভ
-      const historyRef = db.collection('price_history').doc(tradingCode).collection('daily');
-      await historyRef.add({
-        ltp: price.ltp,
-        high: price.high,
-        low: price.low,
-        volume: price.volume,
-        change: price.change,
-        changePercent: price.changePercent,
-        timestamp: admin.firestore.FieldValue.serverTimestamp()
-      });
     }
-    
     return true;
   } catch (error) {
-    console.error(`Firebase save error:`, error.message);
+    console.error('Firebase save error:', error.message);
     return false;
   }
 }
@@ -303,33 +236,29 @@ async function saveToFirebase(tradingCode, details, price) {
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
   
   try {
-    const { action, tradingCode, codes } = req.query;
+    const { action, tradingCode } = req.query;
     const marketOpen = isMarketOpen();
     
-    // হেল্প / ডকুমেন্টেশন
+    // হেল্প
     if (action === 'help' || !action) {
       return res.status(200).json({
         success: true,
         message: 'DSE Stock Scraper API',
         marketOpen: marketOpen,
         endpoints: {
-          'Test': '?action=test',
-          'Market Status': '?action=market-status',
-          'All Companies': '?action=companies',
-          'Search': '?action=search&query=GP',
-          'Details': '?action=details&tradingCode=GP',
-          'Price': '?action=price&tradingCode=GP',
-          'Complete': '?action=all&tradingCode=GP',
-          'Batch': '?action=batch&codes=GP,SQUARE,BATASHUR'
-        },
-        sampleCodes: ['GP', 'BATASHUR', 'SQUARE', 'UTTARABANK', 'BRACBANK']
+          test: '?action=test',
+          status: '?action=market-status',
+          companies: '?action=companies',
+          details: '?action=details&tradingCode=GP',
+          price: '?action=price&tradingCode=GP',
+          all: '?action=all&tradingCode=GP'
+        }
       });
     }
     
@@ -337,7 +266,7 @@ module.exports = async (req, res) => {
     if (action === 'test') {
       return res.status(200).json({
         success: true,
-        message: 'DSE Scraper API is running!',
+        message: 'DSE Scraper API is working!',
         marketOpen: marketOpen,
         timestamp: new Date().toISOString()
       });
@@ -348,8 +277,7 @@ module.exports = async (req, res) => {
       return res.status(200).json({
         success: true,
         marketOpen: marketOpen,
-        currentTime: new Date().toLocaleString('en-BD', { timeZone: 'Asia/Dhaka' }),
-        marketHours: 'Sunday-Thursday, 10:30 AM - 2:30 PM'
+        currentTime: new Date().toLocaleString('en-BD', { timeZone: 'Asia/Dhaka' })
       });
     }
     
@@ -361,22 +289,6 @@ module.exports = async (req, res) => {
         count: companies.length,
         marketOpen: marketOpen,
         data: companies
-      });
-    }
-    
-    // সার্চ
-    if (action === 'search' && tradingCode) {
-      const companies = await getAllCompanies();
-      const searchTerm = tradingCode.toUpperCase();
-      const filtered = companies.filter(c => 
-        c.code.includes(searchTerm) || c.name.toUpperCase().includes(searchTerm)
-      );
-      return res.status(200).json({
-        success: true,
-        searchTerm: searchTerm,
-        count: filtered.length,
-        marketOpen: marketOpen,
-        data: filtered.slice(0, 20)
       });
     }
     
@@ -392,7 +304,7 @@ module.exports = async (req, res) => {
       return res.status(200).json({ success: true, marketOpen: marketOpen, data: price });
     }
     
-    // সব ডাটা
+    // সব ডাটা একসাথে
     if (action === 'all' && tradingCode) {
       const code = tradingCode.toUpperCase();
       const [details, price] = await Promise.all([
@@ -409,34 +321,10 @@ module.exports = async (req, res) => {
       });
     }
     
-    // ব্যাচ প্রসেসিং
-    if (action === 'batch' && codes) {
-      const codeList = codes.split(',').map(c => c.trim().toUpperCase()).slice(0, 10);
-      const results = [];
-      
-      for (const code of codeList) {
-        const [details, price] = await Promise.all([
-          getCompanyDetails(code),
-          getMarketPrice(code)
-        ]);
-        await saveToFirebase(code, details, price);
-        results.push({ code, details, price });
-        await new Promise(resolve => setTimeout(resolve, 500));
-      }
-      
-      return res.status(200).json({
-        success: true,
-        marketOpen: marketOpen,
-        processed: results.length,
-        data: results
-      });
-    }
-    
-    // Invalid action
     return res.status(400).json({
       success: false,
-      message: `Invalid action: ${action}`,
-      availableActions: ['test', 'help', 'market-status', 'companies', 'search', 'details', 'price', 'all', 'batch']
+      message: 'Invalid action. Use: test, market-status, companies, details, price, all',
+      example: '?action=all&tradingCode=GP'
     });
     
   } catch (error) {
