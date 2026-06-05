@@ -2,7 +2,7 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 const admin = require('firebase-admin');
 
-// আপনার Firebase কনফিগারেশন (সঠিক ফরম্যাটে)
+// আপনার Firebase কনফিগারেশন
 const serviceAccount = {
   "type": "service_account",
   "project_id": "dse-scraper-c651b",
@@ -26,14 +26,139 @@ if (!admin.apps.length) {
 
 const db = admin.firestore();
 
-// সব কোম্পানির তালিকা পাওয়ার ফাংশন
+// উন্নত মার্কেট প্রাইস ফাংশন
+async function getMarketPrice(tradingCode) {
+  try {
+    // DSE এর API endpoint (যেখানে আসল ডাটা আসে)
+    const response = await axios.get('https://www.dsebd.org/latest_share_price_scroll_l.php', {
+      timeout: 15000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+      }
+    });
+    
+    const $ = cheerio.load(response.data);
+    
+    // বিভিন্ন পসিবল সেলেক্টর চেক করা
+    let priceData = {
+      tradingCode: tradingCode,
+      ltp: 'N/A',
+      high: 'N/A',
+      low: 'N/A',
+      change: 'N/A',
+      volume: 'N/A',
+      ycp: 'N/A',
+      scrapedAt: new Date().toISOString()
+    };
+    
+    // সব টেবিল রো চেক করা
+    $('table tr, .table tr, .tblData tr').each((i, row) => {
+      const tds = $(row).find('td');
+      if (tds.length >= 2) {
+        const firstCol = $(tds[0]).text().trim();
+        // ট্রেডিং কোড ম্যাচ করা (case insensitive)
+        if (firstCol.toUpperCase() === tradingCode.toUpperCase()) {
+          priceData = {
+            tradingCode: tradingCode,
+            ltp: $(tds[1]).text().trim() || 'N/A',
+            change: $(tds[2]).text().trim() || 'N/A',
+            ycp: $(tds[3]).text().trim() || 'N/A',
+            high: $(tds[4]).text().trim() || 'N/A',
+            low: $(tds[5]).text().trim() || 'N/A',
+            volume: $(tds[6]).text().trim() || 'N/A',
+            scrapedAt: new Date().toISOString()
+          };
+          return false;
+        }
+      }
+    });
+    
+    // যদি না পাওয়া যায়, তাহলে পুরো HTML এ সার্চ করা
+    if (priceData.ltp === 'N/A') {
+      const html = $('body').text();
+      const regex = new RegExp(`${tradingCode}[\\s\\S]*?(\\d+\\.?\\d*)[\\s\\S]*?(\\d+\\.?\\d*)[\\s\\S]*?(\\d+\\.?\\d*)`, 'i');
+      const match = html.match(regex);
+      if (match) {
+        priceData.ltp = match[1] || 'N/A';
+        priceData.high = match[2] || 'N/A';
+        priceData.low = match[3] || 'N/A';
+      }
+    }
+    
+    return priceData;
+  } catch (error) {
+    console.error(`Error fetching price for ${tradingCode}:`, error.message);
+    return { tradingCode, ltp: 'Error', high: 'Error', low: 'Error', scrapedAt: new Date().toISOString() };
+  }
+}
+
+// উন্নত কোম্পানি ডিটেইলস ফাংশন
+async function getCompanyDetails(tradingCode) {
+  try {
+    const url = `https://www.dsebd.org/displayCompany.php?name=${tradingCode}`;
+    const response = await axios.get(url, {
+      timeout: 10000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      }
+    });
+    
+    const $ = cheerio.load(response.data);
+    const details = {
+      tradingCode: tradingCode,
+      scrapedAt: new Date().toISOString()
+    };
+    
+    // সব টেবিল থেকে তথ্য নেওয়া
+    $('table').each((tableIdx, table) => {
+      $(table).find('tr').each((i, row) => {
+        const cols = $(row).find('td');
+        const headers = $(row).find('th');
+        
+        if (headers.length > 0) {
+          const key = $(headers[0]).text().trim();
+          const value = $(headers[1]).text().trim();
+          
+          if (key && value) {
+            if (key.includes('Company Name')) details.companyName = value;
+            if (key.includes('Trading Code')) details.tradingCode = value;
+            if (key.includes('Listing Year')) details.listingYear = value;
+            if (key.includes('Paid-up Capital')) details.paidUpCapital = value;
+            if (key.includes('Face Value')) details.faceValue = value;
+            if (key.includes('Share Category')) details.shareCategory = value;
+            if (key.includes('EPS')) details.eps = value;
+            if (key.includes('NAV')) details.nav = value;
+            if (key.includes('P/E Ratio')) details.peRatio = value;
+          }
+        }
+        
+        if (cols.length >= 2) {
+          const label = $(cols[0]).text().trim();
+          const value = $(cols[1]).text().trim();
+          
+          if (label.includes('EPS')) details.eps = value;
+          if (label.includes('NAV')) details.nav = value;
+          if (label.includes('Category')) details.shareCategory = value;
+          if (label.includes('Dividend')) details.dividend = value;
+        }
+      });
+    });
+    
+    return details;
+  } catch (error) {
+    console.error(`Error fetching details for ${tradingCode}:`, error.message);
+    return { tradingCode, error: error.message, scrapedAt: new Date().toISOString() };
+  }
+}
+
+// সব কোম্পানির তালিকা
 async function getAllCompanies() {
   try {
     const response = await axios.get('https://www.dsebd.org/stock_price_yesterday.php', {
       timeout: 15000,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-      }
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
     });
     
     const $ = cheerio.load(response.data);
@@ -50,84 +175,14 @@ async function getAllCompanies() {
       }
     });
     
-    return companies.slice(0, 50);
+    return companies.slice(0, 30);
   } catch (error) {
     console.error('Error fetching companies:', error);
     return [];
   }
 }
 
-// নির্দিষ্ট কোম্পানির বিস্তারিত তথ্য
-async function getCompanyDetails(tradingCode) {
-  try {
-    const url = `https://www.dsebd.org/displayCompany.php?name=${tradingCode}`;
-    const response = await axios.get(url, {
-      timeout: 10000,
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
-    });
-    
-    const $ = cheerio.load(response.data);
-    const details = { tradingCode, scrapedAt: new Date().toISOString() };
-    
-    $('table tr').each((i, row) => {
-      const th = $(row).find('th').text().trim();
-      const td = $(row).find('td').text().trim();
-      
-      if (th && td) {
-        if (th.includes('Company Name')) details.companyName = td;
-        if (th.includes('Trading Code')) details.tradingCode = td;
-        if (th.includes('Listing Year')) details.listingYear = td;
-        if (th.includes('Paid-up Capital')) details.paidUpCapital = td;
-        if (th.includes('Face Value')) details.faceValue = td;
-        if (th.includes('Share Category')) details.shareCategory = td;
-        if (th.includes('EPS')) details.eps = td;
-        if (th.includes('NAV')) details.nav = td;
-        if (th.includes('P/E Ratio')) details.peRatio = td;
-      }
-    });
-    
-    return details;
-  } catch (error) {
-    console.error(`Error fetching details for ${tradingCode}:`, error.message);
-    return null;
-  }
-}
-
-// মার্কেট প্রাইস আনার ফাংশন
-async function getMarketPrice(tradingCode) {
-  try {
-    const response = await axios.get('https://www.dsebd.org/latest_share_price_scroll_l.php', {
-      timeout: 10000,
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
-    });
-    
-    const $ = cheerio.load(response.data);
-    let priceData = { tradingCode, ltp: 'N/A', high: 'N/A', low: 'N/A', change: 'N/A', volume: 'N/A', scrapedAt: new Date().toISOString() };
-    
-    $('tr').each((i, row) => {
-      const tds = $(row).find('td');
-      if (tds.length > 6 && $(tds[0]).text().trim() === tradingCode) {
-        priceData = {
-          tradingCode,
-          ltp: $(tds[1]).text().trim() || 'N/A',
-          high: $(tds[4]).text().trim() || 'N/A',
-          low: $(tds[5]).text().trim() || 'N/A',
-          change: $(tds[3]).text().trim() || 'N/A',
-          volume: $(tds[6]).text().trim() || 'N/A',
-          scrapedAt: new Date().toISOString()
-        };
-        return false;
-      }
-    });
-    
-    return priceData;
-  } catch (error) {
-    console.error(`Error fetching price for ${tradingCode}:`, error.message);
-    return null;
-  }
-}
-
-// Vercel API handler
+// API Handler
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
@@ -140,7 +195,11 @@ module.exports = async (req, res) => {
     const { action, tradingCode } = req.query;
     
     if (action === 'test') {
-      return res.status(200).json({ success: true, message: 'DSE Scraper API is working!', timestamp: new Date().toISOString() });
+      return res.status(200).json({ 
+        success: true, 
+        message: 'DSE Scraper API is working!',
+        timestamp: new Date().toISOString()
+      });
       
     } else if (action === 'companies') {
       const companies = await getAllCompanies();
@@ -159,6 +218,18 @@ module.exports = async (req, res) => {
         getCompanyDetails(tradingCode),
         getMarketPrice(tradingCode)
       ]);
+      
+      // Firebase এ সেভ করুন (যদি ডাটা ভালো হয়)
+      if (price.ltp !== 'N/A' && price.ltp !== 'Error') {
+        try {
+          await db.collection('market_prices').doc(tradingCode).set(price, { merge: true });
+          await db.collection('company_details').doc(tradingCode).set(details, { merge: true });
+          console.log(`✅ Saved ${tradingCode} to Firebase`);
+        } catch (fbError) {
+          console.error('Firebase save error:', fbError.message);
+        }
+      }
+      
       return res.status(200).json({ success: true, data: { details, price } });
       
     } else {
