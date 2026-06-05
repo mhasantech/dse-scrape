@@ -26,35 +26,49 @@ if (!admin.apps.length) {
 
 const db = admin.firestore();
 
-// ============= HELPER FUNCTIONS =============
+// ============= UTILITY FUNCTIONS =============
 
 // মার্কেট খোলা আছে কিনা চেক করা
 function isMarketOpen() {
   const now = new Date();
-  const day = now.getDay(); // 0=Sunday, 1=Monday, 2=Tuesday, 3=Wednesday, 4=Thursday, 5=Friday, 6=Saturday
+  const day = now.getDay();
   const hour = now.getHours();
   const minute = now.getMinutes();
   
   // শুক্রবার(5) বা শনিবার(6) বন্ধ
   if (day === 5 || day === 6) return false;
   
-  // সকাল ১০:৩০ থেকে বিকাল ২:৩০ পর্যন্ত
   const timeNow = hour * 60 + minute;
-  const marketStart = 10 * 60 + 30; // 10:30 AM
-  const marketEnd = 14 * 60 + 30;   // 2:30 PM
+  const marketStart = 10 * 60 + 30;
+  const marketEnd = 14 * 60 + 30;
   
   return timeNow >= marketStart && timeNow <= marketEnd;
 }
 
+// ক্লিন টেক্সট ফাংশন
+function cleanText(text) {
+  if (!text) return 'N/A';
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+// এক্সট্রাক্ট ভ্যালু ফাংশন
+function extractValue($row, selectors) {
+  for (const selector of selectors) {
+    const val = $(row).find(selector).last().text().trim();
+    if (val && val !== '-' && val !== 'N/A') return cleanText(val);
+  }
+  return 'N/A';
+}
+
+// ============= SCRAPING FUNCTIONS =============
+
 // সব কোম্পানির তালিকা
 async function getAllCompanies() {
   try {
-    console.log('📊 Fetching companies from DSE...');
     const response = await axios.get('https://www.dsebd.org/stock_price_yesterday.php', {
       timeout: 15000,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
       }
     });
     
@@ -72,155 +86,128 @@ async function getAllCompanies() {
       }
     });
     
-    console.log(`✅ Found ${companies.length} companies`);
-    return companies.slice(0, 100);
+    return companies;
   } catch (error) {
     console.error('Error fetching companies:', error);
     return [];
   }
 }
 
-// কোম্পানির বিস্তারিত তথ্য (EPS, Share Category, Dividend, Record Date সহ)
+// কোম্পানির বিস্তারিত তথ্য
 async function getCompanyDetails(tradingCode) {
   try {
     const url = `https://www.dsebd.org/displayCompany.php?name=${tradingCode}`;
     const response = await axios.get(url, {
       timeout: 15000,
-      headers: { 
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-      }
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
     });
     
     const $ = cheerio.load(response.data);
-    const details = { 
+    const details = {
       tradingCode: tradingCode,
       scrapedAt: new Date().toISOString()
     };
     
-    // সব টেবিল এবং ডিভ থেকে তথ্য সংগ্রহ
-    $('table, .table, .companyInfo, .detailsTable').find('tr, .row, .info-row').each((i, row) => {
+    // তথ্য সংগ্রহ
+    $('table tr, .table tr').each((i, row) => {
       const text = $(row).text().toLowerCase();
-      const html = $(row).html() || '';
+      const th = $(row).find('th').text().toLowerCase();
+      const td = $(row).find('td');
       
       // কোম্পানির নাম
-      if (text.includes('company name') || text.includes('name of company')) {
-        const value = $(row).find('td, .value, .info').last().text().trim();
-        if (value) details.companyName = value;
+      if (text.includes('company name') || th.includes('company name')) {
+        details.companyName = extractValue($(row), ['td:last-child', '.value', '.info']);
       }
       
       // ট্রেডিং কোড
-      if (text.includes('trading code') || text.includes('scrip code')) {
-        const value = $(row).find('td, .value, .info').last().text().trim();
-        if (value && value !== tradingCode) details.scripCode = value;
+      if (text.includes('trading code') || th.includes('trading code')) {
+        const val = extractValue($(row), ['td:last-child', '.value']);
+        if (val !== tradingCode) details.scripCode = val;
       }
       
-      // ইপিএস (EPS)
-      if (text.includes('eps') || text.includes('earning per share')) {
-        const value = $(row).find('td, .value, .info').last().text().trim();
-        if (value) details.eps = value.replace(/[^0-9.-]/g, '');
+      // লিস্টিং ইয়ার
+      if (text.includes('listing year') || th.includes('listing year')) {
+        details.listingYear = extractValue($(row), ['td:last-child', '.value']);
       }
       
       // শেয়ার ক্যাটাগরি
-      if (text.includes('share category') || text.includes('category')) {
-        const value = $(row).find('td, .value, .info').last().text().trim();
-        if (value) details.shareCategory = value;
+      if (text.includes('share category') || th.includes('share category')) {
+        details.shareCategory = extractValue($(row), ['td:last-child', '.value']);
       }
       
       // ফেস ভ্যালু
-      if (text.includes('face value')) {
-        const value = $(row).find('td, .value, .info').last().text().trim();
-        if (value) details.faceValue = value;
+      if (text.includes('face value') || th.includes('face value')) {
+        details.faceValue = extractValue($(row), ['td:last-child', '.value']);
       }
       
-      // NAV (নেট অ্যাসেট ভ্যালু)
-      if (text.includes('nav') || text.includes('net asset value')) {
-        const value = $(row).find('td, .value, .info').last().text().trim();
-        if (value) details.nav = value;
+      // পেইড আপ ক্যাপিটাল
+      if ((text.includes('paid up capital') || th.includes('paid up capital')) && !text.includes('type')) {
+        const val = extractValue($(row), ['td:last-child', '.value']);
+        if (val && !val.includes('Equity') && !val.includes('Type')) {
+          details.paidUpCapital = val;
+        }
+      }
+      
+      // ইপিএস
+      if (text.includes('eps') || th.includes('eps')) {
+        const val = extractValue($(row), ['td:last-child', '.value']);
+        if (val && !val.includes('Using') && !val.includes('Diluted')) {
+          details.eps = val;
+        }
+      }
+      
+      // এনএভি
+      if ((text.includes('nav') || th.includes('nav')) && !text.includes('per share')) {
+        const val = extractValue($(row), ['td:last-child', '.value']);
+        if (val && !val.includes('Profit') && !val.includes('Loss')) {
+          details.nav = val;
+        }
       }
       
       // পি/ই রেশিও
-      if (text.includes('p/e') || text.includes('pe ratio')) {
-        const value = $(row).find('td, .value, .info').last().text().trim();
-        if (value) details.peRatio = value;
+      if (text.includes('p/e') || th.includes('p/e')) {
+        const val = extractValue($(row), ['td:last-child', '.value']);
+        if (val && !val.includes('Dividend Yield')) {
+          details.peRatio = val;
+        }
       }
       
       // ডিভিডেন্ড
-      if (text.includes('dividend')) {
-        const value = $(row).find('td, .value, .info').last().text().trim();
-        if (value) details.dividend = value;
+      if (text.includes('dividend') && !text.includes('cash') && !text.includes('stock')) {
+        details.dividend = extractValue($(row), ['td:last-child', '.value']);
       }
       
       // ক্যাশ ডিভিডেন্ড
-      if (text.includes('cash dividend')) {
-        const value = $(row).find('td, .value, .info').last().text().trim();
-        if (value) details.cashDividend = value;
+      if (text.includes('cash dividend') || (text.includes('dividend') && text.includes('cash'))) {
+        details.cashDividend = extractValue($(row), ['td:last-child', '.value']);
       }
       
       // স্টক ডিভিডেন্ড / বোনাস
       if (text.includes('stock dividend') || text.includes('bonus')) {
-        const value = $(row).find('td, .value, .info').last().text().trim();
-        if (value) details.stockDividend = value;
+        details.stockDividend = extractValue($(row), ['td:last-child', '.value']);
       }
       
-      // রেকর্ড ডেট
-      if (text.includes('record date') || text.includes('booking date') || text.includes('date of record')) {
-        const value = $(row).find('td, .value, .info').last().text().trim();
-        if (value) details.recordDate = value;
-      }
-      
-      // লিস্টিং ইয়ার
-      if (text.includes('listing year') || text.includes('listed year')) {
-        const value = $(row).find('td, .value, .info').last().text().trim();
-        if (value) details.listingYear = value;
-      }
-      
-      // পেইড-আপ ক্যাপিটাল
-      if (text.includes('paid up capital') || text.includes('paid-up capital')) {
-        const value = $(row).find('td, .value, .info').last().text().trim();
-        if (value) details.paidUpCapital = value;
-      }
-      
-      // অথরাইজড ক্যাপিটাল
-      if (text.includes('authorized capital')) {
-        const value = $(row).find('td, .value, .info').last().text().trim();
-        if (value) details.authorizedCapital = value;
+      // রেকর্ড ডেট (শুধু তারিখ বের করা)
+      if (text.includes('record date') || text.includes('booking date')) {
+        let val = extractValue($(row), ['td:last-child', '.value']);
+        const dateMatch = val.match(/\d{2}[-/]\w{3}[-/]\d{4}|\d{4}[-/]\d{2}[-/]\d{2}/);
+        details.recordDate = dateMatch ? dateMatch[0] : val.split('.')[0].substring(0, 30);
       }
     });
-    
-    // পুরো HTML থেকে ডাটা এক্সট্রাক্ট (Regex ব্যবহার করে)
-    const htmlText = $.html();
-    
-    // EPS খোঁজা (বিভিন্ন ফরম্যাটে)
-    const epsMatch = htmlText.match(/EPS[:\s]*([0-9.]+)/i) || 
-                     htmlText.match(/Earning Per Share[:\s]*([0-9.]+)/i);
-    if (epsMatch && !details.eps) details.eps = epsMatch[1];
-    
-    // ডিভিডেন্ড খোঁজা
-    const divMatch = htmlText.match(/Dividend[:\s]*([0-9.]+%?)/i) ||
-                     htmlText.match(/Dividend[:\s]*([0-9.]+)\s*%/i);
-    if (divMatch && !details.dividend) details.dividend = divMatch[1];
     
     return details;
   } catch (error) {
     console.error(`Error fetching details for ${tradingCode}:`, error.message);
-    return { 
-      tradingCode: tradingCode, 
-      error: error.message, 
-      scrapedAt: new Date().toISOString() 
-    };
+    return { tradingCode, error: error.message, scrapedAt: new Date().toISOString() };
   }
 }
 
-// মার্কেট প্রাইস (LTP, High, Low, Volume, Change)
+// মার্কেট প্রাইস
 async function getMarketPrice(tradingCode) {
   try {
     const response = await axios.get('https://www.dsebd.org/latest_share_price_scroll_l.php', {
       timeout: 15000,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-      }
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
     });
     
     const $ = cheerio.load(response.data);
@@ -239,23 +226,34 @@ async function getMarketPrice(tradingCode) {
       marketOpen: isMarketOpen()
     };
     
-    // সব টেবিল রো চেক করা
-    $('table tr, .table tr, .tblData tr').each((i, row) => {
+    $('table tr').each((i, row) => {
       const tds = $(row).find('td');
       if (tds.length >= 6) {
         const firstCol = $(tds[0]).text().trim();
         if (firstCol.toUpperCase() === tradingCode.toUpperCase()) {
+          const ltp = $(tds[1]).text().trim();
+          const ycp = $(tds[3]).text().trim();
+          let changePercent = 'N/A';
+          
+          if (ltp !== 'N/A' && ycp !== 'N/A' && ltp && ycp) {
+            const ltpNum = parseFloat(ltp);
+            const ycpNum = parseFloat(ycp);
+            if (!isNaN(ltpNum) && !isNaN(ycpNum) && ycpNum !== 0) {
+              changePercent = (((ltpNum - ycpNum) / ycpNum) * 100).toFixed(2) + '%';
+            }
+          }
+          
           priceData = {
             tradingCode: tradingCode,
-            ltp: $(tds[1]).text().trim() || 'N/A',
+            ltp: ltp || 'N/A',
             change: $(tds[2]).text().trim() || 'N/A',
-            ycp: $(tds[3]).text().trim() || 'N/A',
+            ycp: ycp || 'N/A',
             high: $(tds[4]).text().trim() || 'N/A',
             low: $(tds[5]).text().trim() || 'N/A',
             volume: $(tds[6]) ? $(tds[6]).text().trim() : 'N/A',
             value: $(tds[7]) ? $(tds[7]).text().trim() : 'N/A',
             trade: $(tds[8]) ? $(tds[8]).text().trim() : 'N/A',
-            changePercent: calculateChangePercent($(tds[1]).text().trim(), $(tds[3]).text().trim()),
+            changePercent: changePercent,
             scrapedAt: new Date().toISOString(),
             marketOpen: isMarketOpen()
           };
@@ -267,88 +265,44 @@ async function getMarketPrice(tradingCode) {
     return priceData;
   } catch (error) {
     console.error(`Error fetching price for ${tradingCode}:`, error.message);
-    return { 
-      tradingCode: tradingCode, 
-      ltp: 'Error', 
-      error: error.message,
-      marketOpen: isMarketOpen(),
-      scrapedAt: new Date().toISOString() 
-    };
+    return { tradingCode, ltp: 'Error', marketOpen: isMarketOpen(), scrapedAt: new Date().toISOString() };
   }
 }
 
-// চেঞ্জ পার্সেন্ট ক্যালকুলেট করা
-function calculateChangePercent(ltp, ycp) {
-  if (!ltp || !ycp || ltp === 'N/A' || ycp === 'N/A') return 'N/A';
-  const ltpNum = parseFloat(ltp);
-  const ycpNum = parseFloat(ycp);
-  if (isNaN(ltpNum) || isNaN(ycpNum) || ycpNum === 0) return 'N/A';
-  const changePercent = ((ltpNum - ycpNum) / ycpNum) * 100;
-  return changePercent.toFixed(2) + '%';
-}
-
-// ব্যাচ প্রসেসিং (একাধিক কোম্পানি)
-async function batchScrape(tradingCodes, maxConcurrent = 3) {
-  const results = [];
-  const marketOpen = isMarketOpen();
-  
-  for (let i = 0; i < tradingCodes.length; i += maxConcurrent) {
-    const batch = tradingCodes.slice(i, i + maxConcurrent);
-    const batchPromises = batch.map(async (code) => {
-      const [details, price] = await Promise.all([
-        getCompanyDetails(code),
-        getMarketPrice(code)
-      ]);
-      return { code, details, price, marketOpen };
-    });
-    const batchResults = await Promise.all(batchPromises);
-    results.push(...batchResults);
-    
-    // Rate limiting - delay between batches
-    if (i + maxConcurrent < tradingCodes.length) {
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    }
-  }
-  
-  return results;
-}
-
-// Firebase এ ডাটা সেভ করা
+// Firebase এ সেভ
 async function saveToFirebase(tradingCode, details, price) {
   try {
-    // কোম্পানির ডিটেইলস সেভ
     if (details && Object.keys(details).length > 1) {
       await db.collection('company_details').doc(tradingCode).set(details, { merge: true });
     }
     
-    // মার্কেট প্রাইস সেভ
     if (price && price.ltp && price.ltp !== 'N/A' && price.ltp !== 'Error') {
       await db.collection('market_prices').doc(tradingCode).set(price, { merge: true });
       
-      // হিস্টোরিক্যাল ডাটা সেভ (প্রতিটি আপডেট আলাদা ডকুমেন্ট হিসেবে)
-      const historyRef = db.collection('price_history').doc(tradingCode).collection('history');
+      // হিস্টোরি সেভ
+      const historyRef = db.collection('price_history').doc(tradingCode).collection('daily');
       await historyRef.add({
         ltp: price.ltp,
         high: price.high,
         low: price.low,
         volume: price.volume,
+        change: price.change,
+        changePercent: price.changePercent,
         timestamp: admin.firestore.FieldValue.serverTimestamp()
       });
     }
     
-    console.log(`✅ Saved ${tradingCode} to Firebase`);
     return true;
   } catch (error) {
-    console.error(`❌ Firebase save error for ${tradingCode}:`, error.message);
+    console.error(`Firebase save error:`, error.message);
     return false;
   }
 }
 
-// ============= MAIN API HANDLER =============
+// ============= API HANDLER =============
 module.exports = async (req, res) => {
-  // CORS Headers
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   
   if (req.method === 'OPTIONS') {
@@ -357,63 +311,88 @@ module.exports = async (req, res) => {
   
   try {
     const { action, tradingCode, codes } = req.query;
-    const marketStatus = isMarketOpen();
+    const marketOpen = isMarketOpen();
     
-    console.log(`📡 API Call: action=${action}, code=${tradingCode}, marketOpen=${marketStatus}`);
+    // হেল্প / ডকুমেন্টেশন
+    if (action === 'help' || !action) {
+      return res.status(200).json({
+        success: true,
+        message: 'DSE Stock Scraper API',
+        marketOpen: marketOpen,
+        endpoints: {
+          'Test': '?action=test',
+          'Market Status': '?action=market-status',
+          'All Companies': '?action=companies',
+          'Search': '?action=search&query=GP',
+          'Details': '?action=details&tradingCode=GP',
+          'Price': '?action=price&tradingCode=GP',
+          'Complete': '?action=all&tradingCode=GP',
+          'Batch': '?action=batch&codes=GP,SQUARE,BATASHUR'
+        },
+        sampleCodes: ['GP', 'BATASHUR', 'SQUARE', 'UTTARABANK', 'BRACBANK']
+      });
+    }
     
-    // ============= ACTION HANDLERS =============
-    
-    // 1. টেস্ট এন্ডপয়েন্ট
+    // টেস্ট
     if (action === 'test') {
       return res.status(200).json({
         success: true,
         message: 'DSE Scraper API is running!',
-        marketOpen: marketStatus,
-        timestamp: new Date().toISOString(),
-        endpoints: {
-          test: '/api/scrape?action=test',
-          companies: '/api/scrape?action=companies',
-          details: '/api/scrape?action=details&tradingCode=GP',
-          price: '/api/scrape?action=price&tradingCode=GP',
-          all: '/api/scrape?action=all&tradingCode=GP',
-          batch: '/api/scrape?action=batch&codes=GP,SQUARE,BATASHUR',
-          search: '/api/scrape?action=search&query=BATA'
-        }
+        marketOpen: marketOpen,
+        timestamp: new Date().toISOString()
       });
     }
     
-    // 2. সব কোম্পানির তালিকা
+    // মার্কেট স্ট্যাটাস
+    if (action === 'market-status') {
+      return res.status(200).json({
+        success: true,
+        marketOpen: marketOpen,
+        currentTime: new Date().toLocaleString('en-BD', { timeZone: 'Asia/Dhaka' }),
+        marketHours: 'Sunday-Thursday, 10:30 AM - 2:30 PM'
+      });
+    }
+    
+    // সব কোম্পানি
     if (action === 'companies') {
       const companies = await getAllCompanies();
       return res.status(200).json({
         success: true,
         count: companies.length,
-        marketOpen: marketStatus,
+        marketOpen: marketOpen,
         data: companies
       });
     }
     
-    // 3. কোম্পানির বিস্তারিত তথ্য শুধু
+    // সার্চ
+    if (action === 'search' && tradingCode) {
+      const companies = await getAllCompanies();
+      const searchTerm = tradingCode.toUpperCase();
+      const filtered = companies.filter(c => 
+        c.code.includes(searchTerm) || c.name.toUpperCase().includes(searchTerm)
+      );
+      return res.status(200).json({
+        success: true,
+        searchTerm: searchTerm,
+        count: filtered.length,
+        marketOpen: marketOpen,
+        data: filtered.slice(0, 20)
+      });
+    }
+    
+    // শুধু ডিটেইলস
     if (action === 'details' && tradingCode) {
       const details = await getCompanyDetails(tradingCode.toUpperCase());
-      return res.status(200).json({
-        success: true,
-        marketOpen: marketStatus,
-        data: details
-      });
+      return res.status(200).json({ success: true, marketOpen: marketOpen, data: details });
     }
     
-    // 4. মার্কেট প্রাইস শুধু
+    // শুধু প্রাইস
     if (action === 'price' && tradingCode) {
       const price = await getMarketPrice(tradingCode.toUpperCase());
-      return res.status(200).json({
-        success: true,
-        marketOpen: marketStatus,
-        data: price
-      });
+      return res.status(200).json({ success: true, marketOpen: marketOpen, data: price });
     }
     
-    // 5. সব তথ্য একসাথে (Details + Price)
+    // সব ডাটা
     if (action === 'all' && tradingCode) {
       const code = tradingCode.toUpperCase();
       const [details, price] = await Promise.all([
@@ -421,101 +400,35 @@ module.exports = async (req, res) => {
         getMarketPrice(code)
       ]);
       
-      // Firebase এ সেভ
       await saveToFirebase(code, details, price);
       
       return res.status(200).json({
         success: true,
-        marketOpen: marketStatus,
-        data: {
-          details: details,
-          price: price,
-          lastUpdated: new Date().toISOString()
-        }
+        marketOpen: marketOpen,
+        data: { details, price, lastUpdated: new Date().toISOString() }
       });
     }
     
-    // 6. ব্যাচ প্রসেসিং (একাধিক কোম্পানি)
+    // ব্যাচ প্রসেসিং
     if (action === 'batch' && codes) {
-      const codeList = codes.split(',').map(c => c.trim().toUpperCase());
-      const results = await batchScrape(codeList);
+      const codeList = codes.split(',').map(c => c.trim().toUpperCase()).slice(0, 10);
+      const results = [];
       
-      // সব রেজাল্ট Firebase এ সেভ
-      for (const result of results) {
-        await saveToFirebase(result.code, result.details, result.price);
+      for (const code of codeList) {
+        const [details, price] = await Promise.all([
+          getCompanyDetails(code),
+          getMarketPrice(code)
+        ]);
+        await saveToFirebase(code, details, price);
+        results.push({ code, details, price });
+        await new Promise(resolve => setTimeout(resolve, 500));
       }
       
       return res.status(200).json({
         success: true,
-        marketOpen: marketStatus,
+        marketOpen: marketOpen,
         processed: results.length,
         data: results
-      });
-    }
-    
-    // 7. সার্চ ফাংশন (কোম্পানি খোঁজা)
-    if (action === 'search' && tradingCode) {
-      const companies = await getAllCompanies();
-      const searchTerm = tradingCode.toUpperCase();
-      const filtered = companies.filter(c => 
-        c.code.includes(searchTerm) || 
-        c.name.toUpperCase().includes(searchTerm)
-      );
-      return res.status(200).json({
-        success: true,
-        searchTerm: searchTerm,
-        count: filtered.length,
-        marketOpen: marketStatus,
-        data: filtered.slice(0, 20)
-      });
-    }
-    
-    // 8. মার্কেট স্ট্যাটাস চেক
-    if (action === 'market-status') {
-      return res.status(200).json({
-        success: true,
-        marketOpen: marketStatus,
-        currentTime: new Date().toLocaleString('en-BD', { timeZone: 'Asia/Dhaka' }),
-        marketHours: {
-          start: '10:30 AM',
-          end: '2:30 PM',
-          days: 'Sunday to Thursday'
-        },
-        isHoliday: !marketStatus && new Date().getDay() !== 5 && new Date().getDay() !== 6 ? 'Market closed for today' : 'Weekend'
-      });
-    }
-    
-    // 9. হট স্টকস (টপ ভলিউম)
-    if (action === 'hot-stocks') {
-      // কিছু প্রিমিয়াম কোম্পানির তালিকা
-      const hotCodes = ['GP', 'BATASHUR', 'SQUARE', 'BRACBANK', 'DUTCHBANGLA', 'ROBI', 'BEXIMCO', 'IFADAUTOS'];
-      const results = await batchScrape(hotCodes);
-      return res.status(200).json({
-        success: true,
-        marketOpen: marketStatus,
-        data: results
-      });
-    }
-    
-    // 10. হেল্প / ডকুমেন্টেশন
-    if (action === 'help' || !action) {
-      return res.status(200).json({
-        success: true,
-        message: 'DSE Stock Scraper API Documentation',
-        marketOpen: marketStatus,
-        endpoints: {
-          'Test API': '/api/scrape?action=test',
-          'Market Status': '/api/scrape?action=market-status',
-          'All Companies': '/api/scrape?action=companies',
-          'Search Company': '/api/scrape?action=search&query=GP',
-          'Company Details': '/api/scrape?action=details&tradingCode=GP',
-          'Market Price': '/api/scrape?action=price&tradingCode=GP',
-          'Complete Data': '/api/scrape?action=all&tradingCode=GP',
-          'Batch Process': '/api/scrape?action=batch&codes=GP,SQUARE,BATASHUR',
-          'Hot Stocks': '/api/scrape?action=hot-stocks'
-        },
-        sampleCodes: ['GP', 'BATASHUR', 'SQUARE', 'BRACBANK', 'DUTCHBANGLA', 'ROBI', 'BEXIMCO'],
-        marketHours: 'Sunday-Thursday, 10:30 AM - 2:30 PM (Bangladesh Time)'
       });
     }
     
@@ -523,15 +436,11 @@ module.exports = async (req, res) => {
     return res.status(400).json({
       success: false,
       message: `Invalid action: ${action}`,
-      availableActions: ['test', 'companies', 'details', 'price', 'all', 'batch', 'search', 'market-status', 'hot-stocks', 'help']
+      availableActions: ['test', 'help', 'market-status', 'companies', 'search', 'details', 'price', 'all', 'batch']
     });
     
   } catch (error) {
     console.error('API Error:', error);
-    return res.status(500).json({
-      success: false,
-      error: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
-    });
+    return res.status(500).json({ success: false, error: error.message });
   }
 };
