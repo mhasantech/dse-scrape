@@ -1,0 +1,18 @@
+{
+  "name": "dse-stock-scraper",
+  "version": "1.0.0",
+  "description": "Bangladesh Stock Market Scraper for DSE",
+  "main": "api/scrape.js",
+  "scripts": {
+    "dev": "vercel dev",
+    "deploy": "vercel deploy"
+  },
+  "dependencies": {
+    "axios": "^1.6.0",
+    "cheerio": "^1.0.0-rc.12",
+    "firebase-admin": "^11.11.0"
+  },
+  "devDependencies": {
+    "vercel": "^32.0.0"
+  }
+}
