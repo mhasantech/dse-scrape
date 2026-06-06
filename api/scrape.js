@@ -26,7 +26,7 @@ if (!admin.apps.length) {
 
 const db = admin.firestore();
 
-// ============= SIMPLE SCRAPING FUNCTIONS =============
+// ============= UTILITY FUNCTIONS =============
 
 // মার্কেট খোলা আছে কিনা চেক করা
 function isMarketOpen() {
@@ -35,14 +35,44 @@ function isMarketOpen() {
   const hour = now.getHours();
   const minute = now.getMinutes();
   
+  // শুক্রবার(5) বা শনিবার(6) বন্ধ
   if (day === 5 || day === 6) return false;
   
   const timeNow = hour * 60 + minute;
-  const marketStart = 10 * 60 + 30;
-  const marketEnd = 14 * 60 + 30;
+  const marketStart = 10 * 60 + 30; // 10:30 AM
+  const marketEnd = 14 * 60 + 30;   // 2:30 PM
   
   return timeNow >= marketStart && timeNow <= marketEnd;
 }
+
+// শুধু তারিখ বের করার ফাংশন (Record Date এর জন্য)
+function extractDateOnly(text) {
+  if (!text) return 'N/A';
+  // বিভিন্ন ডেট ফরম্যাট চেক করা
+  const datePatterns = [
+    /\d{2}-\w{3}-\d{4}/,      // 15-May-2024
+    /\d{4}-\d{2}-\d{2}/,      // 2024-05-15
+    /\d{2}\/\d{2}\/\d{4}/,    // 15/05/2024
+    /\d{2}-\d{2}-\d{4}/       // 15-05-2024
+  ];
+  
+  for (const pattern of datePatterns) {
+    const match = text.match(pattern);
+    if (match) return match[0];
+  }
+  
+  // যদি কোন তারিখ না পাওয়া যায়
+  return text.split('.')[0].split(',')[0].substring(0, 20);
+}
+
+// ডিভিডেন্ড থেকে শুধু পার্সেন্ট বের করা
+function extractDividendPercent(text) {
+  if (!text) return 'N/A';
+  const match = text.match(/(\d+(?:\.\d+)?)%/);
+  return match ? match[1] + '%' : text;
+}
+
+// ============= SCRAPING FUNCTIONS =============
 
 // সব কোম্পানির তালিকা
 async function getAllCompanies() {
@@ -75,8 +105,8 @@ async function getAllCompanies() {
   }
 }
 
-// কোম্পানির বিস্তারিত তথ্য (সরলীকৃত)
-async function getCompanyDetails(tradingCode) {
+// শুধু প্রয়োজনীয় তথ্য আনার ফাংশন
+async function getRequiredStockData(tradingCode) {
   try {
     const url = `https://www.dsebd.org/displayCompany.php?name=${tradingCode}`;
     const response = await axios.get(url, {
@@ -85,70 +115,60 @@ async function getCompanyDetails(tradingCode) {
     });
     
     const $ = cheerio.load(response.data);
-    const details = {
+    const html = $.html();
+    
+    // প্রয়োজনীয় তথ্য সংগ্রহ
+    const stockData = {
       tradingCode: tradingCode,
+      shareCategory: 'N/A',
+      listingYear: 'N/A',
+      recordDate: 'N/A',
+      cashDividend: 'N/A',
+      stockDividend: 'N/A',
       scrapedAt: new Date().toISOString()
     };
     
-    // টেক্সট সার্চ করে ডাটা নেওয়া
-    const html = $.html();
-    
-    // কোম্পানির নাম
-    const nameMatch = html.match(/Company Name\s*<\/th>\s*<td[^>]*>([^<]+)</i);
-    if (nameMatch) details.companyName = nameMatch[1].trim();
-    
-    // ট্রেডিং কোড
-    const codeMatch = html.match(/Trading Code\s*<\/th>\s*<td[^>]*>([^<]+)</i);
-    if (codeMatch && codeMatch[1].trim() !== tradingCode) details.scripCode = codeMatch[1].trim();
-    
-    // লিস্টিং ইয়ার
-    const yearMatch = html.match(/Listing Year\s*<\/th>\s*<td[^>]*>([^<]+)</i);
-    if (yearMatch) details.listingYear = yearMatch[1].trim();
-    
-    // শেয়ার ক্যাটাগরি
+    // Share Category
     const catMatch = html.match(/Share Category\s*<\/th>\s*<td[^>]*>([^<]+)</i);
-    if (catMatch) details.shareCategory = catMatch[1].trim();
+    if (catMatch) stockData.shareCategory = catMatch[1].trim();
     
-    // ফেস ভ্যালু
-    const faceMatch = html.match(/Face Value\s*<\/th>\s*<td[^>]*>([^<]+)</i);
-    if (faceMatch) details.faceValue = faceMatch[1].trim();
+    // Listing Year
+    const yearMatch = html.match(/Listing Year\s*<\/th>\s*<td[^>]*>([^<]+)</i);
+    if (yearMatch) stockData.listingYear = yearMatch[1].trim();
     
-    // ইপিএস
-    const epsMatch = html.match(/EPS\s*<\/th>\s*<td[^>]*>([^<]+)</i);
-    if (epsMatch) details.eps = epsMatch[1].trim();
-    
-    // এনএভি
-    const navMatch = html.match(/NAV\s*<\/th>\s*<td[^>]*>([^<]+)</i);
-    if (navMatch) details.nav = navMatch[1].trim();
-    
-    // পি/ই রেশিও
-    const peMatch = html.match(/P\/E Ratio\s*<\/th>\s*<td[^>]*>([^<]+)</i);
-    if (peMatch) details.peRatio = peMatch[1].trim();
-    
-    // ডিভিডেন্ড
-    const divMatch = html.match(/Dividend\s*<\/th>\s*<td[^>]*>([^<]+)</i);
-    if (divMatch) details.dividend = divMatch[1].trim();
-    
-    // ক্যাশ ডিভিডেন্ড
-    const cashMatch = html.match(/Cash Dividend\s*<\/th>\s*<td[^>]*>([^<]+)</i);
-    if (cashMatch) details.cashDividend = cashMatch[1].trim();
-    
-    // স্টক ডিভিডেন্ড
-    const stockMatch = html.match(/Stock Dividend\s*<\/th>\s*<td[^>]*>([^<]+)</i);
-    if (stockMatch) details.stockDividend = stockMatch[1].trim();
-    
-    // রেকর্ড ডেট
+    // Record Date (শুধু তারিখ)
     const recordMatch = html.match(/Record Date\s*<\/th>\s*<td[^>]*>([^<]+)</i);
-    if (recordMatch) details.recordDate = recordMatch[1].trim();
+    if (recordMatch) stockData.recordDate = extractDateOnly(recordMatch[1]);
     
-    return details;
+    // Cash Dividend (শুধু latest টা)
+    const cashMatch = html.match(/Cash Dividend\s*<\/th>\s*<td[^>]*>([^<]+)</i);
+    if (cashMatch) {
+      const cashText = cashMatch[1];
+      // লেটেস্ট ডিভিডেন্ড বের করা (সাধারণত প্রথমটা)
+      const latestCash = cashText.split(',')[0];
+      stockData.cashDividend = extractDividendPercent(latestCash);
+    }
+    
+    // Stock Dividend (শুধু latest টা)
+    const stockMatch = html.match(/Stock Dividend\s*<\/th>\s*<td[^>]*>([^<]+)</i);
+    if (stockMatch) {
+      const stockText = stockMatch[1];
+      const latestStock = stockText.split(',')[0];
+      stockData.stockDividend = extractDividendPercent(latestStock);
+    }
+    
+    return stockData;
   } catch (error) {
-    console.error(`Error fetching details for ${tradingCode}:`, error.message);
-    return { tradingCode, error: error.message, scrapedAt: new Date().toISOString() };
+    console.error(`Error fetching data for ${tradingCode}:`, error.message);
+    return { 
+      tradingCode: tradingCode, 
+      error: error.message,
+      scrapedAt: new Date().toISOString()
+    };
   }
 }
 
-// মার্কেট প্রাইস (সরলীকৃত)
+// মার্কেট প্রাইস (LTP, High, Low)
 async function getMarketPrice(tradingCode) {
   try {
     const response = await axios.get('https://www.dsebd.org/latest_share_price_scroll_l.php', {
@@ -162,47 +182,22 @@ async function getMarketPrice(tradingCode) {
       ltp: 'N/A',
       high: 'N/A',
       low: 'N/A',
-      ycp: 'N/A',
-      change: 'N/A',
-      changePercent: 'N/A',
-      volume: 'N/A',
-      value: 'N/A',
-      trade: 'N/A',
-      scrapedAt: new Date().toISOString(),
-      marketOpen: isMarketOpen()
+      marketOpen: isMarketOpen(),
+      scrapedAt: new Date().toISOString()
     };
     
-    // টেবিল থেকে ডাটা খোঁজা
     $('tr').each((i, row) => {
       const tds = $(row).find('td');
       if (tds.length >= 6) {
         const code = $(tds[0]).text().trim();
         if (code.toUpperCase() === tradingCode.toUpperCase()) {
-          const ltp = $(tds[1]).text().trim();
-          const ycp = $(tds[3]).text().trim();
-          let changePercent = 'N/A';
-          
-          if (ltp && ycp && ltp !== 'N/A' && ycp !== 'N/A') {
-            const ltpNum = parseFloat(ltp);
-            const ycpNum = parseFloat(ycp);
-            if (!isNaN(ltpNum) && !isNaN(ycpNum) && ycpNum !== 0) {
-              changePercent = (((ltpNum - ycpNum) / ycpNum) * 100).toFixed(2) + '%';
-            }
-          }
-          
           priceData = {
             tradingCode: tradingCode,
-            ltp: ltp || 'N/A',
-            change: $(tds[2]).text().trim() || 'N/A',
-            ycp: ycp || 'N/A',
+            ltp: $(tds[1]).text().trim() || 'N/A',
             high: $(tds[4]).text().trim() || 'N/A',
             low: $(tds[5]).text().trim() || 'N/A',
-            volume: tds[6] ? $(tds[6]).text().trim() : 'N/A',
-            value: tds[7] ? $(tds[7]).text().trim() : 'N/A',
-            trade: tds[8] ? $(tds[8]).text().trim() : 'N/A',
-            changePercent: changePercent,
-            scrapedAt: new Date().toISOString(),
-            marketOpen: isMarketOpen()
+            marketOpen: isMarketOpen(),
+            scrapedAt: new Date().toISOString()
           };
           return false;
         }
@@ -212,18 +207,25 @@ async function getMarketPrice(tradingCode) {
     return priceData;
   } catch (error) {
     console.error(`Error fetching price for ${tradingCode}:`, error.message);
-    return { tradingCode, ltp: 'Error', marketOpen: isMarketOpen(), scrapedAt: new Date().toISOString() };
+    return { 
+      tradingCode: tradingCode, 
+      ltp: 'Error',
+      high: 'N/A',
+      low: 'N/A',
+      marketOpen: isMarketOpen(),
+      scrapedAt: new Date().toISOString()
+    };
   }
 }
 
 // Firebase এ সেভ
-async function saveToFirebase(tradingCode, details, price) {
+async function saveToFirebase(tradingCode, stockData, priceData) {
   try {
-    if (details && !details.error) {
-      await db.collection('company_details').doc(tradingCode).set(details, { merge: true });
+    if (stockData && !stockData.error) {
+      await db.collection('stock_info').doc(tradingCode).set(stockData, { merge: true });
     }
-    if (price && price.ltp && price.ltp !== 'N/A' && price.ltp !== 'Error') {
-      await db.collection('market_prices').doc(tradingCode).set(price, { merge: true });
+    if (priceData && priceData.ltp && priceData.ltp !== 'N/A' && priceData.ltp !== 'Error') {
+      await db.collection('stock_prices').doc(tradingCode).set(priceData, { merge: true });
     }
     return true;
   } catch (error) {
@@ -242,22 +244,24 @@ module.exports = async (req, res) => {
   }
   
   try {
-    const { action, tradingCode } = req.query;
+    const { action, tradingCode, codes } = req.query;
     const marketOpen = isMarketOpen();
     
-    // হেল্প
+    // হেল্প / ডকুমেন্টেশন
     if (action === 'help' || !action) {
       return res.status(200).json({
         success: true,
-        message: 'DSE Stock Scraper API',
+        message: 'DSE Stock Scraper - Required Fields Only',
         marketOpen: marketOpen,
+        fields: ['Share Category', 'Listing Year', 'Record Date', 'Cash Dividend', 'Stock Dividend', 'LTP', 'High', 'Low'],
         endpoints: {
           test: '?action=test',
           status: '?action=market-status',
           companies: '?action=companies',
-          details: '?action=details&tradingCode=GP',
+          stock: '?action=stock&tradingCode=GP',
           price: '?action=price&tradingCode=GP',
-          all: '?action=all&tradingCode=GP'
+          all: '?action=all&tradingCode=GP',
+          batch: '?action=batch&codes=GP,SQUARE,BATASHUR'
         }
       });
     }
@@ -277,7 +281,8 @@ module.exports = async (req, res) => {
       return res.status(200).json({
         success: true,
         marketOpen: marketOpen,
-        currentTime: new Date().toLocaleString('en-BD', { timeZone: 'Asia/Dhaka' })
+        currentTime: new Date().toLocaleString('en-BD', { timeZone: 'Asia/Dhaka' }),
+        message: marketOpen ? 'Market is OPEN' : 'Market is CLOSED'
       });
     }
     
@@ -292,38 +297,86 @@ module.exports = async (req, res) => {
       });
     }
     
-    // শুধু ডিটেইলস
-    if (action === 'details' && tradingCode) {
-      const details = await getCompanyDetails(tradingCode.toUpperCase());
-      return res.status(200).json({ success: true, marketOpen: marketOpen, data: details });
+    // শুধু স্টক তথ্য (Share Category, Listing Year, Record Date, Dividends)
+    if (action === 'stock' && tradingCode) {
+      const stockData = await getRequiredStockData(tradingCode.toUpperCase());
+      return res.status(200).json({ success: true, marketOpen: marketOpen, data: stockData });
     }
     
-    // শুধু প্রাইস
+    // শুধু প্রাইস (LTP, High, Low)
     if (action === 'price' && tradingCode) {
-      const price = await getMarketPrice(tradingCode.toUpperCase());
-      return res.status(200).json({ success: true, marketOpen: marketOpen, data: price });
+      const priceData = await getMarketPrice(tradingCode.toUpperCase());
+      return res.status(200).json({ success: true, marketOpen: marketOpen, data: priceData });
     }
     
-    // সব ডাটা একসাথে
+    // সব তথ্য একসাথে (শুধু প্রয়োজনীয় ফিল্ড)
     if (action === 'all' && tradingCode) {
       const code = tradingCode.toUpperCase();
-      const [details, price] = await Promise.all([
-        getCompanyDetails(code),
+      const [stockData, priceData] = await Promise.all([
+        getRequiredStockData(code),
         getMarketPrice(code)
       ]);
       
-      await saveToFirebase(code, details, price);
+      await saveToFirebase(code, stockData, priceData);
+      
+      // শুধু প্রয়োজনীয় ফিল্ডগুলো রিটার্ন করছি
+      const result = {
+        tradingCode: code,
+        shareCategory: stockData.shareCategory,
+        listingYear: stockData.listingYear,
+        recordDate: stockData.recordDate,
+        cashDividend: stockData.cashDividend,
+        stockDividend: stockData.stockDividend,
+        ltp: priceData.ltp,
+        high: priceData.high,
+        low: priceData.low,
+        marketOpen: marketOpen,
+        lastUpdated: new Date().toISOString()
+      };
+      
+      return res.status(200).json({ success: true, data: result });
+    }
+    
+    // ব্যাচ প্রসেসিং (একাধিক কোম্পানি)
+    if (action === 'batch' && codes) {
+      const codeList = codes.split(',').map(c => c.trim().toUpperCase()).slice(0, 10);
+      const results = [];
+      
+      for (const code of codeList) {
+        const [stockData, priceData] = await Promise.all([
+          getRequiredStockData(code),
+          getMarketPrice(code)
+        ]);
+        
+        await saveToFirebase(code, stockData, priceData);
+        
+        results.push({
+          tradingCode: code,
+          shareCategory: stockData.shareCategory,
+          listingYear: stockData.listingYear,
+          recordDate: stockData.recordDate,
+          cashDividend: stockData.cashDividend,
+          stockDividend: stockData.stockDividend,
+          ltp: priceData.ltp,
+          high: priceData.high,
+          low: priceData.low
+        });
+        
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
       
       return res.status(200).json({
         success: true,
         marketOpen: marketOpen,
-        data: { details, price, lastUpdated: new Date().toISOString() }
+        count: results.length,
+        data: results
       });
     }
     
     return res.status(400).json({
       success: false,
-      message: 'Invalid action. Use: test, market-status, companies, details, price, all',
+      message: 'Invalid action',
+      availableActions: ['test', 'market-status', 'companies', 'stock', 'price', 'all', 'batch'],
       example: '?action=all&tradingCode=GP'
     });
     
