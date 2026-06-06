@@ -79,7 +79,72 @@ async function getAllCompanies() {
     return [];
   }
 }
+// ============= রেকর্ড ডেট স্ক্র্যাপার (DSE AGM & Record Date Page) =============
+async function getRecordDates() {
+  try {
+    console.log('📅 Fetching record dates from DSE...');
+    const response = await axios.get('https://www.dsebd.org/CompAGM&RecordDate.php', {
+      timeout: 20000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+      }
+    });
+    
+    const $ = cheerio.load(response.data);
+    const recordDates = [];
+    
+    // DSE সাইটের টেবিল থেকে ডাটা সংগ্রহ
+    $('table tr').each((i, row) => {
+      const tds = $(row).find('td');
+      if (tds.length >= 3) {
+        const companyName = $(tds[0]).text().trim();
+        const agmDate = $(tds[1]).text().trim();
+        const recordDate = $(tds[2]).text().trim();
+        
+        // হেডার রো বাদ দেওয়া
+        if (companyName && companyName !== 'Company Name' && companyName !== 'SL NO') {
+          // রেকর্ড ডেট থেকে শুধু তারিখ বের করা
+          const cleanRecordDate = extractDateOnly(recordDate);
+          
+          recordDates.push({
+            company: companyName,
+            agmDate: agmDate,
+            recordDate: cleanRecordDate,
+            scrapedAt: new Date().toISOString()
+          });
+        }
+      }
+    });
+    
+    console.log(`✅ Found ${recordDates.length} record dates`);
+    return recordDates;
+    
+  } catch (error) {
+    console.error('Error fetching record dates:', error.message);
+    return [];
+  }
+}
 
+// তারিখ এক্সট্রাক্ট করার হেল্পার ফাংশন
+function extractDateOnly(text) {
+  if (!text || text === 'N/A') return 'N/A';
+  
+  const datePatterns = [
+    /\d{2}-\w{3}-\d{4}/,      // 15-May-2024
+    /\d{4}-\d{2}-\d{2}/,      // 2024-05-15
+    /\d{2}\/\d{2}\/\d{4}/,    // 15/05/2024
+    /\d{2}-\d{2}-\d{4}/,      // 15-05-2024
+    /\d{1,2}\s+\w+\s+\d{4}/   // 15 May 2024
+  ];
+  
+  for (const pattern of datePatterns) {
+    const match = text.match(pattern);
+    if (match) return match[0];
+  }
+  
+  return text.substring(0, 20);
+}
 // কোম্পানির বিস্তারিত তথ্য (EPS, Share Category, Dividend, Record Date সহ)
 async function getCompanyDetails(tradingCode) {
   try {
@@ -520,7 +585,32 @@ module.exports = async (req, res) => {
         data: results
       });
     }
-    
+    // 11. রেকর্ড ডেট স্ক্র্যাপার (সব কোম্পানির)
+if (action === 'recorddates') {
+  const recordDates = await getRecordDates();
+  return res.status(200).json({
+    success: true,
+    count: recordDates.length,
+    marketOpen: isMarketOpen(),
+    data: recordDates,
+    note: 'AGM এবং রেকর্ড ডেটের তালিকা',
+    lastUpdated: new Date().toISOString()
+  });
+}
+
+// 12. নির্দিষ্ট কোম্পানির রেকর্ড ডেট
+if (action === 'company-record' && tradingCode) {
+  const allRecords = await getRecordDates();
+  const companyRecords = allRecords.filter(r => 
+    r.company.toLowerCase().includes(tradingCode.toLowerCase())
+  );
+  return res.status(200).json({
+    success: true,
+    tradingCode: tradingCode,
+    count: companyRecords.length,
+    data: companyRecords
+  });
+}
     // 10. হেল্প / ডকুমেন্টেশন
     if (action === 'help' || !action) {
       return res.status(200).json({
