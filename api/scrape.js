@@ -164,29 +164,29 @@ async function getCompanyDetails(tradingCode) {
       }
       
       // রেকর্ড ডেট (শুধু তারিখ বের করার জন্য - আপডেটেড)
+// রেকর্ড ডেট (শুধু তারিখ বের করার জন্য - আরও উন্নত)
 if (text.includes('record date') || text.includes('booking date') || text.includes('date of record')) {
   let value = $(row).find('td, .value, .info').last().text().trim();
   if (value) {
-    // শুধু তারিখ বের করা
+    // প্রথমে নোট বাদ দেওয়ার চেষ্টা
+    let cleanValue = value.split('Note:')[0].trim();
+    
+    // তারিখ প্যাটার্ন খোঁজা
     const datePatterns = [
       /\d{2}-\w{3}-\d{4}/,      // 15-May-2024
       /\d{4}-\d{2}-\d{2}/,      // 2024-05-15
       /\d{2}\/\d{2}\/\d{4}/,    // 15/05/2024
-      /\d{2}-\d{2}-\d{4}/       // 15-05-2024
+      /\d{2}-\d{2}-\d{4}/,      // 15-05-2024
+      /\d{1,2}\s+\w+\s+\d{4}/   // 15 May 2024
     ];
     
     let extractedDate = 'N/A';
     for (const pattern of datePatterns) {
-      const match = value.match(pattern);
+      const match = cleanValue.match(pattern);
       if (match) {
         extractedDate = match[0];
         break;
       }
-    }
-    
-    // যদি কোন তারিখ না পাওয়া যায়, তাহলে প্রথম অংশ নেওয়া
-    if (extractedDate === 'N/A') {
-      extractedDate = value.split('.')[0].split(',')[0].substring(0, 25);
     }
     
     details.recordDate = extractedDate;
