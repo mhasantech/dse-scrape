@@ -1,24 +1,29 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
 
+// CORS Proxy (ব্লক এড়ানোর জন্য)
+const PROXY_URL = 'https://api.allorigins.win/raw?url=';
+const DSE_BASE = 'https://www.dsebd.org';
+
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   
   try {
     const { action, tradingCode } = req.query;
     
-    // টেস্ট এন্ডপয়েন্ট
+    // টেস্ট
     if (action === 'test') {
       return res.status(200).json({
         success: true,
-        message: 'DSE Scraper Working!',
+        message: 'DSE Scraper Active',
         timestamp: new Date().toISOString()
       });
     }
     
     // সব কোম্পানি
     if (action === 'companies') {
-      const response = await axios.get('https://www.dsebd.org/stock_price_yesterday.php');
+      const url = `${PROXY_URL}${encodeURIComponent(`${DSE_BASE}/stock_price_yesterday.php`)}`;
+      const response = await axios.get(url, { timeout: 20000 });
       const $ = cheerio.load(response.data);
       const companies = [];
       
@@ -27,7 +32,7 @@ module.exports = async (req, res) => {
         if (tds.length >= 2) {
           const code = $(tds[0]).text().trim();
           const name = $(tds[1]).text().trim();
-          if (code && code !== 'TRADING CODE' && code.length < 15) {
+          if (code && code !== 'TRADING CODE' && code.length < 20 && code !== 'SCROLL FOR MORE') {
             companies.push({ code, name });
           }
         }
@@ -36,73 +41,75 @@ module.exports = async (req, res) => {
       return res.status(200).json({ success: true, count: companies.length, data: companies.slice(0, 50) });
     }
     
-    // নির্দিষ্ট কোম্পানির ডাটা (ওয়ার্কিং)
+    // নির্দিষ্ট কোম্পানির ডাটা
     if (action === 'all' && tradingCode) {
       const code = tradingCode.toUpperCase();
-      console.log(`Fetching data for: ${code}`);
       
-      // কোম্পানির বিস্তারিত তথ্য
-      const detailUrl = `https://www.dsebd.org/displayCompany.php?name=${code}`;
-      const detailRes = await axios.get(detailUrl, {
-        headers: { 'User-Agent': 'Mozilla/5.0' }
-      });
+      // কোম্পানির ডিটেইলস (Proxy দিয়ে)
+      const detailUrl = `${PROXY_URL}${encodeURIComponent(`${DSE_BASE}/displayCompany.php?name=${code}`)}`;
+      const detailRes = await axios.get(detailUrl, { timeout: 20000 });
       const html = detailRes.data;
       
-      // Share Category - বিভিন্ন প্যাটার্ন চেক
-      let shareCategory = 'N/A';
-      const catMatch1 = html.match(/Share Category<\/th>\s*<td[^>]*>([^<]+)</i);
-      const catMatch2 = html.match(/Category<\/th>\s*<td[^>]*>([^<]+)</i);
-      if (catMatch1) shareCategory = catMatch1[1].trim();
-      else if (catMatch2) shareCategory = catMatch2[1].trim();
+      // ডাটা এক্সট্রাক্ট (Regex দিয়ে)
+      const extractValue = (pattern) => {
+        const match = html.match(pattern);
+        return match ? match[1].trim().replace(/\s+/g, ' ') : 'N/A';
+      };
+      
+      // Share Category
+      let shareCategory = extractValue(/Share Category<\/th>\s*<td[^>]*>([^<]+)</i);
+      if (shareCategory === 'N/A') {
+        shareCategory = extractValue(/Category<\/th>\s*<td[^>]*>([^<]+)</i);
+      }
       
       // Listing Year
-      let listingYear = 'N/A';
-      const yearMatch = html.match(/Listing Year<\/th>\s*<td[^>]*>([^<]+)</i);
-      if (yearMatch) listingYear = yearMatch[1].trim();
+      let listingYear = extractValue(/Listing Year<\/th>\s*<td[^>]*>([^<]+)</i);
+      if (listingYear === 'N/A') {
+        listingYear = extractValue(/Listed Year<\/th>\s*<td[^>]*>([^<]+)</i);
+      }
       
       // Record Date (শুধু তারিখ)
       let recordDate = 'N/A';
       const recordMatch = html.match(/Record Date<\/th>\s*<td[^>]*>([^<]+)</i);
       if (recordMatch) {
-        let dateText = recordMatch[1];
-        const dateMatch = dateText.match(/\d{2}-\w{3}-\d{4}|\d{4}-\d{2}-\d{2}/);
-        recordDate = dateMatch ? dateMatch[0] : dateText.substring(0, 30);
+        const dateText = recordMatch[1];
+        const dateMatch = dateText.match(/\d{2}[-\/]\w{3}[-\/]\d{4}|\d{4}[-\/]\d{2}[-\/]\d{2}/);
+        recordDate = dateMatch ? dateMatch[0] : dateText.substring(0, 20);
       }
       
       // Cash Dividend (লেটেস্ট)
       let cashDividend = 'N/A';
       const cashMatch = html.match(/Cash Dividend<\/th>\s*<td[^>]*>([^<]+)</i);
       if (cashMatch) {
-        let cashText = cashMatch[1];
-        let firstCash = cashText.split(',')[0].trim();
-        let percentMatch = firstCash.match(/(\d+(?:\.\d+)?)%/);
-        cashDividend = percentMatch ? percentMatch[1] + '%' : firstCash;
+        const cashText = cashMatch[1];
+        const firstCash = cashText.split(',')[0];
+        const percentMatch = firstCash.match(/(\d+(?:\.\d+)?)%/);
+        cashDividend = percentMatch ? percentMatch[1] + '%' : firstCash.trim();
       }
       
-      // Stock Dividend (লেটেস্ট)
+      // Stock Dividend
       let stockDividend = 'N/A';
       const stockMatch = html.match(/Stock Dividend<\/th>\s*<td[^>]*>([^<]+)</i);
       if (stockMatch) {
-        let stockText = stockMatch[1];
-        let firstStock = stockText.split(',')[0].trim();
-        let percentMatch = firstStock.match(/(\d+(?:\.\d+)?)%/);
-        stockDividend = percentMatch ? percentMatch[1] + '%' : firstStock;
+        const stockText = stockMatch[1];
+        const firstStock = stockText.split(',')[0];
+        const percentMatch = firstStock.match(/(\d+(?:\.\d+)?)%/);
+        stockDividend = percentMatch ? percentMatch[1] + '%' : firstStock.trim();
       }
       
-      // Bonus Dividend (যদি থাকে)
-      let bonusDividend = 'N/A';
-      const bonusMatch = html.match(/Bonus Dividend<\/th>\s*<td[^>]*>([^<]+)</i);
-      if (bonusMatch) {
-        let bonusText = bonusMatch[1];
-        let percentMatch = bonusText.match(/(\d+(?:\.\d+)?)%/);
-        bonusDividend = percentMatch ? percentMatch[1] + '%' : bonusText;
-        if (stockDividend === 'N/A') stockDividend = bonusDividend;
+      // Bonus Dividend (Fallback)
+      if (stockDividend === 'N/A') {
+        const bonusMatch = html.match(/Bonus Dividend<\/th>\s*<td[^>]*>([^<]+)</i);
+        if (bonusMatch) {
+          const bonusText = bonusMatch[1];
+          const percentMatch = bonusText.match(/(\d+(?:\.\d+)?)%/);
+          stockDividend = percentMatch ? percentMatch[1] + '%' : bonusText.trim();
+        }
       }
       
-      // মার্কেট প্রাইস (LTP, High, Low)
-      const priceRes = await axios.get('https://www.dsebd.org/latest_share_price_scroll_l.php', {
-        headers: { 'User-Agent': 'Mozilla/5.0' }
-      });
+      // মার্কেট প্রাইস
+      const priceUrl = `${PROXY_URL}${encodeURIComponent(`${DSE_BASE}/latest_share_price_scroll_l.php`)}`;
+      const priceRes = await axios.get(priceUrl, { timeout: 20000 });
       const $ = cheerio.load(priceRes.data);
       let ltp = 'N/A', high = 'N/A', low = 'N/A';
       
@@ -119,15 +126,15 @@ module.exports = async (req, res) => {
         }
       });
       
-      // মার্কেট খোলা আছে কিনা
+      // Market Status
       const now = new Date();
       const day = now.getDay();
       const hour = now.getHours();
+      const minute = now.getMinutes();
       const marketOpen = (day >= 0 && day <= 4 && day !== 5 && day !== 6 && 
-                          (hour > 10 || (hour === 10 && now.getMinutes() >= 30)) && 
-                          (hour < 14 || (hour === 14 && now.getMinutes() <= 30)));
+                          (hour > 10 || (hour === 10 && minute >= 30)) && 
+                          (hour < 14 || (hour === 14 && minute <= 30)));
       
-      // রেজাল্ট তৈরি
       const result = {
         tradingCode: code,
         shareCategory: shareCategory,
@@ -142,35 +149,7 @@ module.exports = async (req, res) => {
         lastUpdated: new Date().toISOString()
       };
       
-      console.log(`Result for ${code}:`, result);
       return res.status(200).json({ success: true, data: result });
-    }
-    
-    // ব্যাচ প্রসেসিং
-    if (action === 'batch' && tradingCode) {
-      const codes = tradingCode.split(',');
-      const results = [];
-      
-      for (const code of codes) {
-        const detailUrl = `https://www.dsebd.org/displayCompany.php?name=${code.trim().toUpperCase()}`;
-        try {
-          const detailRes = await axios.get(detailUrl);
-          const html = detailRes.data;
-          
-          const cashMatch = html.match(/Cash Dividend<\/th>\s*<td[^>]*>([^<]+)</i);
-          const cashDividend = cashMatch ? (cashMatch[1].split(',')[0].match(/(\d+(?:\.\d+)?)%/)?.[1] + '%' || 'N/A') : 'N/A';
-          
-          results.push({
-            tradingCode: code.trim().toUpperCase(),
-            cashDividend: cashDividend
-          });
-        } catch(e) {
-          results.push({ tradingCode: code.trim().toUpperCase(), cashDividend: 'Error' });
-        }
-        await new Promise(r => setTimeout(r, 500));
-      }
-      
-      return res.status(200).json({ success: true, data: results });
     }
     
     return res.status(400).json({ 
@@ -179,7 +158,7 @@ module.exports = async (req, res) => {
     });
     
   } catch (error) {
-    console.error('Error:', error);
+    console.error('Error:', error.message);
     return res.status(500).json({ success: false, error: error.message });
   }
 };
