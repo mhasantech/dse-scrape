@@ -94,31 +94,77 @@ async function getRecordDates() {
     const $ = cheerio.load(response.data);
     const recordDates = [];
     
-    // DSE সাইটের টেবিল থেকে ডাটা সংগ্রহ
-    $('table tr').each((i, row) => {
-      const tds = $(row).find('td');
-      if (tds.length >= 3) {
-        const companyName = $(tds[0]).text().trim();
-        const agmDate = $(tds[1]).text().trim();
-        const recordDate = $(tds[2]).text().trim();
+    // ডিবাগ: HTML এর টেবিল অংশ দেখা
+    console.log('HTML length:', response.data.length);
+    
+    // একাধিক টেবিল সিলেক্টর চেষ্টা করা
+    let tables = $('table');
+    console.log('Tables found:', tables.length);
+    
+    if (tables.length === 0) {
+      console.log('No tables found, trying alternative selectors...');
+      tables = $('.table, .dataTable, #recordTable');
+    }
+    
+    // প্রতিটি টেবিল চেক করা
+    tables.each((tableIdx, table) => {
+      $(table).find('tr').each((i, row) => {
+        const tds = $(row).find('td');
+        const ths = $(row).find('th');
         
-        // হেডার রো বাদ দেওয়া
-        if (companyName && companyName !== 'Company Name' && companyName !== 'SL NO') {
-          // রেকর্ড ডেট থেকে শুধু তারিখ বের করা
-          const cleanRecordDate = extractDateOnly(recordDate);
-          
-          recordDates.push({
-            company: companyName,
-            agmDate: agmDate,
-            recordDate: cleanRecordDate,
-            scrapedAt: new Date().toISOString()
-          });
+        // যদি হেডার রো হয়, স্কিপ করুন
+        const headerText = $(row).text().toLowerCase();
+        if (headerText.includes('company') || headerText.includes('sl no') || headerText.includes('serial')) {
+          return;
         }
-      }
+        
+        if (tds.length >= 3) {
+          // ক্লিন টেক্সট ফাংশন
+          const cleanText = (text) => {
+            return text.replace(/\t/g, ' ').replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
+          };
+          
+          let companyName = cleanText($(tds[0]).text());
+          let agmDate = cleanText($(tds[1]).text());
+          let recordDate = cleanText($(tds[2]).text());
+          
+          // যদি প্রথম কলামে নাম্বার থাকে, তাহলে দ্বিতীয় কলামে নাম থাকতে পারে
+          if (companyName.match(/^\d+$/) && tds.length >= 4) {
+            companyName = cleanText($(tds[1]).text());
+            agmDate = cleanText($(tds[2]).text());
+            recordDate = cleanText($(tds[3]).text());
+          }
+          
+          // শুধু ভালো ডাটা নেওয়া (যেখানে কোম্পানির নাম আছে এবং খুব ছোট না)
+          if (companyName && companyName.length > 2 && companyName !== 'N/A' && !companyName.match(/^\d+$/)) {
+            // রেকর্ড ডেট থেকে শুধু তারিখ বের করা
+            const cleanRecordDate = extractDateOnly(recordDate);
+            const cleanAgmDate = extractDateOnly(agmDate);
+            
+            recordDates.push({
+              company: companyName,
+              agmDate: cleanAgmDate !== 'N/A' ? cleanAgmDate : agmDate,
+              recordDate: cleanRecordDate,
+              scrapedAt: new Date().toISOString()
+            });
+          }
+        }
+      });
     });
     
-    console.log(`✅ Found ${recordDates.length} record dates`);
-    return recordDates;
+    // ডুপ্লিকেট রিমুভ করা (কোম্পানির নাম অনুসারে)
+    const uniqueRecords = [];
+    const companyNames = new Set();
+    
+    for (const record of recordDates) {
+      if (!companyNames.has(record.company)) {
+        companyNames.add(record.company);
+        uniqueRecords.push(record);
+      }
+    }
+    
+    console.log(`✅ Found ${uniqueRecords.length} unique record dates`);
+    return uniqueRecords;
     
   } catch (error) {
     console.error('Error fetching record dates:', error.message);
@@ -126,24 +172,38 @@ async function getRecordDates() {
   }
 }
 
-// তারিখ এক্সট্রাক্ট করার হেল্পার ফাংশন
+// উন্নত তারিখ এক্সট্রাক্ট ফাংশন
 function extractDateOnly(text) {
-  if (!text || text === 'N/A') return 'N/A';
+  if (!text || text === 'N/A' || text === '') return 'N/A';
   
+  // ক্লিন টেক্সট
+  let cleanText = text.replace(/\t/g, ' ').replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
+  
+  // বিভিন্ন ডেট ফরম্যাট
   const datePatterns = [
-    /\d{2}-\w{3}-\d{4}/,      // 15-May-2024
-    /\d{4}-\d{2}-\d{2}/,      // 2024-05-15
-    /\d{2}\/\d{2}\/\d{4}/,    // 15/05/2024
-    /\d{2}-\d{2}-\d{4}/,      // 15-05-2024
-    /\d{1,2}\s+\w+\s+\d{4}/   // 15 May 2024
+    /(\d{1,2})[-/](\d{1,2})[-/](\d{4})/,     // 15-05-2024 or 15/05/2024
+    /(\d{4})[-/](\d{1,2})[-/](\d{1,2})/,     // 2024-05-15
+    /(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{4})/i, // 15 May 2024
+    /(\d{1,2})[-/](Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*[-/](\d{4})/i // 15-May-2024
   ];
   
   for (const pattern of datePatterns) {
-    const match = text.match(pattern);
-    if (match) return match[0];
+    const match = cleanText.match(pattern);
+    if (match) {
+      // ফরম্যাট করা তারিখ রিটার্ন
+      if (match[2] && match[2].match(/Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec/i)) {
+        return `${match[1]}-${match[2]}-${match[3]}`;
+      }
+      return match[0];
+    }
   }
   
-  return text.substring(0, 20);
+  // যদি কোনো তারিখ না পাওয়া যায়, কিন্তু টেক্সটে তারিখের ইঙ্গিত থাকে
+  if (cleanText.includes('Pending') || cleanText.includes('TBA')) {
+    return 'Pending';
+  }
+  
+  return cleanText.substring(0, 30);
 }
 // কোম্পানির বিস্তারিত তথ্য (EPS, Share Category, Dividend, Record Date সহ)
 async function getCompanyDetails(tradingCode) {
