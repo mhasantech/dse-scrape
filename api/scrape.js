@@ -572,6 +572,50 @@ module.exports = async (req, res) => {
         data: filtered.slice(0, 20)
       });
     }
+    // 10. DSEX ইনডেক্স (লাইভ)
+if (action === 'index') {
+  const indices = await getDSEIndices();
+  return res.status(200).json({
+    success: true,
+    marketOpen: isMarketOpen(),
+    data: indices
+  });
+}
+
+// 11. সব মার্কেট ডাটা একসাথে (DSEX + কোম্পানি)
+if (action === 'market-overview' && tradingCode) {
+  const code = tradingCode.toUpperCase();
+  const [indices, details, price] = await Promise.all([
+    getDSEIndices(),
+    getCompanyDetails(code),
+    getMarketPrice(code)
+  ]);
+  
+  await saveToFirebase(code, details, price);
+  
+  return res.status(200).json({
+    success: true,
+    marketOpen: isMarketOpen(),
+    data: {
+      market: {
+        dsex: indices.dsex,
+        ds30: indices.ds30,
+        dsexShariah: indices.dsexShariah
+      },
+      stock: {
+        tradingCode: code,
+        shareCategory: details.shareCategory,
+        listingYear: details.listingYear,
+        recordDate: details.recordDate,
+        cashDividend: details.cashDividend,
+        stockDividend: details.stockDividend,
+        ltp: price.ltp,
+        high: price.high,
+        low: price.low
+      }
+    }
+  });
+}
     
     // 8. মার্কেট স্ট্যাটাস চেক
     if (action === 'market-status') {
