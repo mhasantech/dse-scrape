@@ -79,6 +79,113 @@ async function getAllCompanies() {
     return [];
   }
 }
+// ============= DSEX INDEX SCRAPER =============
+
+// DSEX, DS30, Shariah Index আনার ফাংশন
+async function getDSEIndices() {
+  try {
+    console.log('📈 Fetching DSE indices...');
+    
+    // DSE-র মাসিক রিভিউ পেজ থেকে ইনডেক্স ডাটা নেওয়া
+    const response = await axios.get('https://www.dsebd.org/', {
+      timeout: 10000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      }
+    });
+    
+    const $ = cheerio.load(response.data);
+    
+    // ইনডেক্স ভ্যালু বের করার প্যাটার্ন
+    let dsex = 'N/A';
+    let ds30 = 'N/A';
+    let dsexShariah = 'N/A';
+    
+    // হোম পেজ থেকে ইনডেক্স খোঁজা (সাধারণত টেবিলে থাকে)
+    $('table tr, .index-value, .market-index').each((i, row) => {
+      const text = $(row).text();
+      
+      // DSEX খোঁজা
+      if (text.includes('DSEX') || text.includes('DSE Broad Index')) {
+        const match = text.match(/(\d{1,3}(?:,\d{3})*(?:\.\d+)?)/);
+        if (match) dsex = match[1].replace(/,/g, '');
+      }
+      
+      // DS30 খোঁজা
+      if (text.includes('DS30') || text.includes('DSE 30')) {
+        const match = text.match(/(\d{1,3}(?:,\d{3})*(?:\.\d+)?)/);
+        if (match) ds30 = match[1].replace(/,/g, '');
+      }
+      
+      // DSEX Shariah খোঁজা
+      if (text.includes('Shariah') || text.includes('DSEX Shariah')) {
+        const match = text.match(/(\d{1,3}(?:,\d{3})*(?:\.\d+)?)/);
+        if (match) dsexShariah = match[1].replace(/,/g, '');
+      }
+    });
+    
+    // ব্যাকআপ: DSE-র API থেকে ডাটা নেওয়ার চেষ্টা
+    if (dsex === 'N/A') {
+      try {
+        const apiResponse = await axios.get('https://www.dsebd.org/latest_share_price_scroll_l.php', {
+          timeout: 8000,
+          headers: { 'User-Agent': 'Mozilla/5.0' }
+        });
+        
+        const html = apiResponse.data;
+        
+        // রেগুলার এক্সপ্রেশন দিয়ে ইনডেক্স খোঁজা
+        const dsexMatch = html.match(/DSEX[^\d]*(\d{1,3}(?:,\d{3})*(?:\.\d+)?)/i);
+        if (dsexMatch) dsex = dsexMatch[1].replace(/,/g, '');
+        
+        const ds30Match = html.match(/DS30[^\d]*(\d{1,3}(?:,\d{3})*(?:\.\d+)?)/i);
+        if (ds30Match) ds30 = ds30Match[1].replace(/,/g, '');
+        
+      } catch (e) {
+        console.log('API backup failed:', e.message);
+      }
+    }
+    
+    return {
+      dsex: dsex,
+      ds30: ds30,
+      dsexShariah: dsexShariah,
+      lastUpdated: new Date().toISOString()
+    };
+    
+  } catch (error) {
+    console.error('Error fetching DSE indices:', error.message);
+    return { dsex: 'N/A', ds30: 'N/A', dsexShariah: 'N/A', error: error.message };
+  }
+}
+
+// DSEX হিস্টোরিক্যাল ডাটা (মাসিক)
+async function getDSEXHistory() {
+  try {
+    console.log('📅 Fetching DSEX historical data...');
+    
+    // DSE-র মাসিক রিভিউ PDF থেকে ডাটা (সরাসরি HTML ভার্সন)
+    const response = await axios.get('https://www.dsebd.org/assets/pdf/Monthly%20Review_October%202025.pdf', {
+      timeout: 15000,
+      responseType: 'arraybuffer'
+    });
+    
+    // PDF পার্স করা জটিল, তাই এখানে শুধু জানিয়ে দিচ্ছি
+    // বাস্তবে আপনাকে pdf-parse লাইব্রেরি ব্যবহার করতে হবে
+    
+    console.log('PDF fetched, but parsing requires pdf-parse library');
+    
+    // আপাতত লোকাল ডাটা রিটার্ন করছে
+    return {
+      note: 'PDF parsing requires pdf-parse library',
+      suggestion: 'Use DSE monthly review page for historical data'
+    };
+    
+  } catch (error) {
+    console.error('Error fetching history:', error.message);
+    return null;
+  }
+}
 
 // কোম্পানির বিস্তারিত তথ্য (EPS, Share Category, Dividend, Record Date সহ)
 async function getCompanyDetails(tradingCode) {
